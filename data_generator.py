@@ -2,7 +2,8 @@
 data_generator.py
 -----------------
 Generiert Trainingsdaten mit Stockfish.
-Für jede Schachstellung (FEN) wird die Stockfish-Bewertung (in Centipawns) gespeichert.
+Verbesserung: Stockfish spielt zuerst den besten Gegenzug, dann wird die
+entstehende Stellung bewertet. So lernt das Modell einen Zug tiefer zu denken.
 
 Verwendung:
     python data_generator.py
@@ -47,7 +48,10 @@ def random_fen_positions(n: int) -> list[str]:
 
 
 def evaluate_positions(fens: list[str], stockfish_path: str) -> list[tuple[str, float]]:
-    """Bewertet jede Stellung mit Stockfish. Gibt (FEN, Score) zurück."""
+    """
+    Bewertet jede Stellung mit Stockfish – aber erst NACH dem besten Gegenzug.
+    So lernt das Modell einen Zug tiefer zu denken (ohne Minimax).
+    """
     data = []
     try:
         engine = chess.engine.SimpleEngine.popen_uci(stockfish_path)
@@ -60,15 +64,39 @@ def evaluate_positions(fens: list[str], stockfish_path: str) -> list[tuple[str, 
     total = len(fens)
     for i, fen in enumerate(fens):
         board = chess.Board(fen)
-        info = engine.analyse(board, chess.engine.Limit(depth=DEPTH, time=TIME_LIMIT))
-        score = info["score"].white()
 
-        if score.is_mate():
-            # Schachmatt → hoher Wert
-            cp = 10000 if score.mate() > 0 else -10000
+        # Schritt 1: Besten Zug für den aktuellen Spieler finden
+        result = engine.play(board, chess.engine.Limit(depth=DEPTH, time=TIME_LIMIT))
+        best_move = result.move
+
+        # Schritt 2: Besten Zug spielen
+        if best_move and best_move in board.legal_moves:
+            board.push(best_move)
+
+        # Schritt 3: Falls Spiel noch läuft → besten Gegenzug spielen
+        if not board.is_game_over() and len(list(board.legal_moves)) > 0:
+            reply = engine.play(board, chess.engine.Limit(depth=DEPTH, time=TIME_LIMIT))
+            if reply.move and reply.move in board.legal_moves:
+                board.push(reply.move)
+
+        # Schritt 4: Entstehende Stellung bewerten
+        if board.is_game_over():
+            outcome = board.outcome()
+            if outcome and outcome.winner == chess.WHITE:
+                cp = 10000
+            elif outcome and outcome.winner == chess.BLACK:
+                cp = -10000
+            else:
+                cp = 0
         else:
-            cp = score.score()
+            info = engine.analyse(board, chess.engine.Limit(depth=DEPTH, time=TIME_LIMIT))
+            score = info["score"].white()
+            if score.is_mate():
+                cp = 10000 if score.mate() > 0 else -10000
+            else:
+                cp = score.score()
 
+        # Original-FEN speichern (nicht die nach den Zügen!)
         data.append((fen, cp))
 
         # Fortschritt anzeigen

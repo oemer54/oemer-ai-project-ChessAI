@@ -1,1 +1,5 @@
 stockfish.exe
+*.npz
+__pycache__/
+*_old.py
+README_old.md
